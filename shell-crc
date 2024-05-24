@@ -1,0 +1,68 @@
+#!/bin/sh
+
+# SMTP Server details
+SMTP_SERVER="your_smtp_server"
+SMTP_PORT=25
+FROM_EMAIL="your_email@example.com"
+TO_EMAIL="recipient_email@example.com"
+SUBJECT="CRC Error Alert on ESXi Host"
+SMTP_USER="your_email@example.com"
+SMTP_PASSWORD="your_email_password"
+
+# Function to extract CRC error count
+get_crc_errors() {
+    interface=$1
+    # Extract the CRC error count
+    errors=$(esxcli network nic stats get -n $interface | grep 'CRC errors')
+    echo "$errors"
+}
+
+# Function to log CRC error status and prepare email body
+log_crc_status() {
+    interface=$1
+    errors=$2
+    crc_count=$(echo "$errors" | awk '{print $NF}')
+    if [ "$crc_count" -gt 0 ]; then
+        logger -t crc_monitor "CRCs are incrementing on $interface: $errors"
+        echo "CRCs are incrementing on $interface: $errors" >> /tmp/crc_error_email_body.txt
+    else
+        logger -t crc_monitor "No CRC errors detected on $interface"
+    fi
+}
+
+# Check CRC errors for vmnic0
+crc_errors_vmnic0=$(get_crc_errors vmnic0)
+log_crc_status vmnic0 "$crc_errors_vmnic0"
+
+# Check CRC errors for vmnic1
+crc_errors_vmnic1=$(get_crc_errors vmnic1)
+log_crc_status vmnic1 "$crc_errors_vmnic1"
+
+# Function to send email
+send_email() {
+    {
+        echo "EHLO $(hostname)"
+        echo "AUTH LOGIN"
+        echo "$(echo -n "$SMTP_USER" | base64)"
+        echo "$(echo -n "$SMTP_PASSWORD" | base64)"
+        echo "MAIL FROM:<$FROM_EMAIL>"
+        echo "RCPT TO:<$TO_EMAIL>"
+        echo "DATA"
+        echo "Subject: $SUBJECT"
+        echo "From: $FROM_EMAIL"
+        echo "To: $TO_EMAIL"
+        echo
+        cat /tmp/crc_error_email_body.txt
+        echo
+        echo "."
+        echo "QUIT"
+    } | nc $SMTP_SERVER $SMTP_PORT
+}
+
+# Check if email body file exists and is not empty, then send email
+if [ -s /tmp/crc_error_email_body.txt ]; then
+    send_email
+    rm /tmp/crc_error_email_body.txt
+else
+    echo "No CRC errors detected, no email sent."
+fi
